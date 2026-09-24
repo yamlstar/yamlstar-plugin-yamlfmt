@@ -3,6 +3,10 @@
 This repository provides the yamlfmt implementation of the generic
 dumper-format plugin API for go-yaml and YAMLStar.
 It uses [google/yamlfmt](https://github.com/google/yamlfmt) v0.21.0.
+The go-yaml adapter currently uses the Go pseudo-version for
+[go-yaml pull request 430](https://github.com/yaml/go-yaml/pull/430).
+It will move to the next go-yaml release candidate after that pull request
+merges.
 
 The go-yaml integration is registered at application startup:
 
@@ -28,4 +32,21 @@ Basic formatter option names may use underscores or hyphens.
 The shared library uses YAMLStar plugin ABI v1 and accepts formatter options
 as JSON.
 
-Run `make test` to test the Go adapter and shared ABI.
+Run `make test` to test the Go adapter and shared ABI without a local Go
+workspace.
+Run `make test-race` for the Go race tests.
+
+## Release archives
+
+Run `make release` to build and test the archive for the current platform.
+Release `v0.1.0` contains these assets:
+
+- `yamlstar-plugin-yamlfmt-v0.1.0-linux-x64.tar.xz`
+- `yamlstar-plugin-yamlfmt-v0.1.0-linux-aarch64.tar.xz`
+- `yamlstar-plugin-yamlfmt-v0.1.0-macos-x64.tar.xz`
+- `yamlstar-plugin-yamlfmt-v0.1.0-macos-arm64.tar.xz`
+- `SHA256SUMS`
+
+The release workflow requires an existing `v`-prefixed tag matching the
+version in `Makefile` and `plugin.edn`.
+It builds and tests all four archives before publishing them.

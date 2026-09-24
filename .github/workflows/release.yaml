@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to release, such as v0.1.0
+        required: true
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.version }}
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout tag
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.version }}
+        fetch-depth: 0
+    - name: Verify tag and versions
+      run: |
+        if ! [[ $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Invalid release tag: $RELEASE_TAG" >&2
+          exit 1
+        fi
+        if [[ $(git rev-parse "$RELEASE_TAG^{commit}") != \
+              $(git rev-parse HEAD) ]]; then
+          echo "Tag $RELEASE_TAG does not point to checkout HEAD" >&2
+          exit 1
+        fi
+        version=${RELEASE_TAG#v}
+        make_version=$(perl -ne \
+          'print $1 if /^VERSION := ([0-9]+\.[0-9]+\.[0-9]+)$/' \
+          Makefile)
+        plugin_version=$(perl -ne \
+          'print $1 if /:version "([0-9]+\.[0-9]+\.[0-9]+)"/' \
+          plugin.edn)
+        if [[ $make_version != "$version" || \
+              $plugin_version != "$version" ]]; then
+          echo "Makefile or plugin.edn does not match $RELEASE_TAG" >&2
+          exit 1
+        fi
+    - name: Verify release does not exist
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists" >&2
+          exit 1
+        fi
+
+  build-linux:
+    name: Build ${{ matrix.platform }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - platform: linux-x64
+          runner: ubuntu-24.04
+        - platform: linux-aarch64
+          runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:20.04
+    permissions:
+      contents: read
+    steps:
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y build-essential ca-certificates curl git xz-utils
+    - name: Checkout tag
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.version }}
+    - name: Configure Git workspace
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+    - name: Build and test release archive
+      run: make test release RELEASE-TAG="$RELEASE_TAG"
+    - name: Upload release archive
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.platform }}
+        path: >-
+          dist/yamlstar-plugin-yamlfmt-${{ inputs.version }}-${{
+          matrix.platform }}.tar.xz
+        if-no-files-found: error
+        retention-days: 7
+
+  build-macos:
+    name: Build ${{ matrix.platform }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - platform: macos-x64
+          runner: macos-15-intel
+        - platform: macos-arm64
+          runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout tag
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.version }}
+    - name: Build and test release archive
+      run: make test release RELEASE-TAG="$RELEASE_TAG"
+    - name: Upload release archive
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ matrix.platform }}
+        path: >-
+          dist/yamlstar-plugin-yamlfmt-${{ inputs.version }}-${{
+          matrix.platform }}.tar.xz
+        if-no-files-found: error
+        retention-days: 7
+
+  publish:
+    name: Publish release
+    needs:
+    - build-linux
+    - build-macos
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout tag
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.version }}
+    - name: Download release archives
+      uses: actions/download-artifact@v7
+      with:
+        path: dist
+        merge-multiple: true
+    - name: Verify release archives
+      run: |
+        expected=(
+          "yamlstar-plugin-yamlfmt-$RELEASE_TAG-linux-x64.tar.xz"
+          "yamlstar-plugin-yamlfmt-$RELEASE_TAG-linux-aarch64.tar.xz"
+          "yamlstar-plugin-yamlfmt-$RELEASE_TAG-macos-x64.tar.xz"
+          "yamlstar-plugin-yamlfmt-$RELEASE_TAG-macos-arm64.tar.xz"
+        )
+        for archive in "${expected[@]}"; do
+          test -f "dist/$archive"
+        done
+        if [[ $(find dist -type f -name '*.tar.xz' | wc -l) -ne 4 ]]; then
+          echo "Unexpected release archive count" >&2
+          exit 1
+        fi
+        cd dist
+        sha256sum "${expected[@]}" > SHA256SUMS
+        sha256sum -c SHA256SUMS
+    - name: Publish GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$RELEASE_TAG" \
+          --draft \
+          --generate-notes \
+          --title "yamlstar-plugin-yamlfmt $RELEASE_TAG" \
+          --verify-tag \
+          dist/*.tar.xz dist/SHA256SUMS
+        gh release edit "$RELEASE_TAG" --draft=false

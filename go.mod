@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/google/yamlfmt v0.21.0
-	go.yaml.in/yaml/v4 v4.0.0-rc.6
+	go.yaml.in/yaml/v4 v4.0.0-rc.6.0.20260924175008-59db6cd010bf
 )
 
 require (
