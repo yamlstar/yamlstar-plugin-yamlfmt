@@ -90,7 +90,7 @@ jobs:
     - name: Configure Git workspace
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
     - name: Build and test release archive
-      run: make test release RELEASE-TAG="$RELEASE_TAG"
+      run: make test release-archive RELEASE-TAG="$RELEASE_TAG"
     - name: Upload release archive
       uses: actions/upload-artifact@v6
       with:
@@ -121,7 +121,7 @@ jobs:
       with:
         ref: ${{ inputs.version }}
     - name: Build and test release archive
-      run: make test release RELEASE-TAG="$RELEASE_TAG"
+      run: make test release-archive RELEASE-TAG="$RELEASE_TAG"
     - name: Upload release archive
       uses: actions/upload-artifact@v6
       with:

@@ -8,9 +8,11 @@ $(shell test -d $M || { \
 GO-VERSION := 1.27.1
 
 include $M/init.mk
+include $M/gh.mk
 include $M/perl.mk
 include $M/go.mk
 include $M/clean.mk
+include $M/shellcheck.mk
 include $M/shell.mk
 
 VERSION := 0.1.0
@@ -26,6 +28,15 @@ RELEASE-PLATFORM := $(OS-NAME)-$(RELEASE-ARCH)
 RELEASE-NAME := $(PLUGIN)-$(RELEASE-TAG)-$(RELEASE-PLATFORM)
 RELEASE-ROOT := dist/$(RELEASE-NAME)
 RELEASE-ARCHIVE := $(RELEASE-ROOT).tar.xz
+RELEASE-REPO := yamlstar/yamlstar-plugin-yamlfmt
+RELEASE-WORKFLOW := release.yaml
+RELEASE-SCRIPT := util/release
+RELEASE-CMD = \
+  PERL=$(PERL) \
+  GH=$(GH) \
+  RELEASE_REPO=$(RELEASE-REPO) \
+  RELEASE_WORKFLOW=$(RELEASE-WORKFLOW) \
+  $(RELEASE-SCRIPT)
 
 ifeq (,$(RELEASE-ARCH))
 $(error Unsupported release platform: $(OS-NAME)-$(ARCH-NAME))
@@ -43,12 +54,13 @@ default:: build
 
 build: $(LIB)
 
-test: $(LIB)
+test: $(LIB) $(SHELLCHECK)
 	GOWORK=off $(GO) test ./...
 	$(CC) -Wall -Wextra -Werror -Iinclude \
 	  -DPLUGIN_EXTENSION='"$(SO)"' test/abi.c \
 	  $(if $(IS-MACOS),,-ldl) -o .cache/abi-test
 	YAMLSTAR_LIBRARY_PATH=$(abspath lib) .cache/abi-test
+	$(SHELLCHECK) $(RELEASE-SCRIPT)
 
 test-race: $(GO)
 	GOWORK=off $(GO) test -race ./...
@@ -64,7 +76,36 @@ install: $(LIB)
 	install -d $(PREFIX)/lib
 	install -m 755 $(LIB) $(PREFIX)/lib/
 
-release: test-release
+release-archive: test-release
+
+export NEW_VERSION := $(or $v,$n)
+ifdef d
+export YS_RELEASE_DRYRUN := 1
+endif
+ifdef a
+export YS_RELEASE_ALLOW_BRANCH := 1
+endif
+
+release: $(PERL) $(GH)
+ifndef v
+	$(error 'make release' requires v=NEW_VERSION)
+endif
+	$(RELEASE-CMD) release "$(v)"
+
+release-list: $(PERL)
+	$(RELEASE-CMD) list
+
+release-sanity-check: $(PERL) $(GH)
+ifndef v
+	$(error 'make release-sanity-check' requires v=NEW_VERSION)
+endif
+	$(RELEASE-CMD) sanity-check "$(v)"
+
+release-build-github: $(PERL) $(GH)
+ifndef v
+	$(error 'make release-build-github' requires v=NEW_VERSION)
+endif
+	$(RELEASE-CMD) build-github "$(v)"
 
 release-check: $(PERL)
 	@version=$$($(PERL) -ne \

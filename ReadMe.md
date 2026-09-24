@@ -38,7 +38,8 @@ Run `make test-race` for the Go race tests.
 
 ## Release archives
 
-Run `make release` to build and test the archive for the current platform.
+Run `make release-archive` to build and test the archive for the current
+platform.
 Release `v0.1.0` contains these assets:
 
 - `yamlstar-plugin-yamlfmt-v0.1.0-linux-x64.tar.xz`
@@ -50,3 +51,14 @@ Release `v0.1.0` contains these assets:
 The release workflow requires an existing `v`-prefixed tag matching the
 version in `Makefile` and `plugin.edn`.
 It builds and tests all four archives before publishing them.
+
+Publish an already-versioned and tagged release with:
+
+```sh
+make release v=0.1.0 a=1
+```
+
+The command checks the source versions, working tree, local and remote tags,
+and release state before asking to dispatch and watch the GitHub workflow.
+The `a=1` setting allows release from a branch other than `main`.
+Use `d=1` to preview the command without starting the workflow.

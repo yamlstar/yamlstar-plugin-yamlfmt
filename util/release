@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+command=${1:-list}
+new_version=${2:-${NEW_VERSION:-}}
+perl=${PERL:?PERL must name the project-managed Perl}
+gh=${GH:-gh}
+release_repo=${RELEASE_REPO:-yamlstar/yamlstar-plugin-yamlfmt}
+release_workflow=${RELEASE_WORKFLOW:-release.yaml}
+dry_run=${YS_RELEASE_DRYRUN:-}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_version() {
+  [[ -n $new_version ]] || die 'A release version is required'
+  [[ $new_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "Invalid version: $new_version"
+}
+
+manifest_version() {
+  # The dollar sign below is a Perl variable, not a shell expansion.
+  # shellcheck disable=SC2016
+  "$perl" -ne 'print "$1\n" if /:version "([^"]+)"/' plugin.edn
+}
+
+make_version() {
+  # The dollar sign below is a Perl variable, not a shell expansion.
+  # shellcheck disable=SC2016
+  "$perl" -ne 'print "$1\n" if /^VERSION := (\S+)/' Makefile
+}
+
+source_version() {
+  # The dollar sign below is a Perl variable, not a shell expansion.
+  # shellcheck disable=SC2016
+  "$perl" -ne \
+    'print "$1\n" if /^const Version = "([^"]+)"/' plugin.go
+}
+
+current_version() {
+  local manifest makefile source
+  manifest=$(manifest_version)
+  makefile=$(make_version)
+  source=$(source_version)
+  [[ -n $manifest ]] || die 'No version found in plugin.edn'
+  [[ $manifest == "$makefile" ]] ||
+    die "Makefile version $makefile does not match plugin.edn $manifest"
+  [[ $manifest == "$source" ]] ||
+    die "Source version $source does not match plugin.edn $manifest"
+  printf '%s\n' "$manifest"
+}
+
+release_tag() {
+  printf 'v%s\n' "$1"
+}
+
+remote_tag_commit() {
+  local tag=$1 line commit
+  line=$(git ls-remote origin "refs/tags/$tag^{}")
+  if [[ -z $line ]]; then
+    line=$(git ls-remote origin "refs/tags/$tag")
+  fi
+  commit=${line%%[[:space:]]*}
+  printf '%s\n' "$commit"
+}
+
+confirm() {
+  local prompt=$1 answer
+  read -r -p "$prompt [Y/n] " answer || return 1
+  [[ -z $answer || $answer =~ ^[Yy]$ ]]
+}
+
+do_list() {
+  cat <<'EOF'
+Yamlfmt Plugin Release Process
+==============================
+
+Publish an already-versioned and tagged release:
+  make release v=0.1.0
+
+Preview without starting the workflow:
+  make release v=0.1.0 d=1
+
+Individual steps:
+  make release-sanity-check v=VERSION
+  make release-build-github v=VERSION
+
+Set a=1 to allow a release from a branch other than main.
+EOF
+}
+
+do_sanity_check() {
+  require_version
+
+  local current branch tag local_commit remote_commit asset_count
+  current=$(current_version)
+  tag=$(release_tag "$new_version")
+  [[ $current == "$new_version" ]] ||
+    die "Current version $current does not match $new_version"
+
+  branch=$(git branch --show-current)
+  [[ -n $branch ]] || die 'Cannot release from detached HEAD'
+  if [[ -z $dry_run && -z ${YS_RELEASE_ALLOW_BRANCH:-} ]]; then
+    [[ $branch == main ]] ||
+      die 'Releases require branch main; set a=1 to override'
+  fi
+  if [[ -z $dry_run && -n $(git status --porcelain) ]]; then
+    git status --short >&2
+    die 'Working tree is not clean'
+  fi
+
+  git rev-parse "$tag" >/dev/null 2>&1 ||
+    die "Tag $tag does not exist"
+  local_commit=$(git rev-parse "$tag^{commit}")
+  git merge-base --is-ancestor "$local_commit" HEAD ||
+    die "Tag $tag is not an ancestor of HEAD"
+  git show "$tag:.github/workflows/$release_workflow" >/dev/null ||
+    die "Tag $tag does not contain $release_workflow"
+
+  remote_commit=$(remote_tag_commit "$tag")
+  [[ -n $remote_commit ]] || die "Tag $tag is not available on origin"
+  [[ $remote_commit == "$local_commit" ]] ||
+    die "Local and remote tags differ for $tag"
+
+  asset_count=$(
+    "$gh" release view "$tag" \
+      --repo "$release_repo" \
+      --json assets \
+      --jq '.assets | length' 2>/dev/null || printf '0\n'
+  )
+  [[ $asset_count == 0 ]] ||
+    die "Release $tag already has published assets"
+
+  printf 'Current version: %s\n' "$current"
+  printf 'Release tag: %s\n' "$tag"
+  printf 'Release branch: %s\n' "$branch"
+  printf 'All sanity checks passed\n'
+}
+
+latest_run() {
+  local commit=$1
+  "$gh" run list \
+    --workflow "$release_workflow" \
+    --repo "$release_repo" \
+    --commit "$commit" \
+    --event workflow_dispatch \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId // empty'
+}
+
+do_build_github() {
+  do_sanity_check
+
+  local tag commit prior_run run_id
+  tag=$(release_tag "$new_version")
+  commit=$(git rev-parse "$tag^{commit}")
+  prior_run=$(latest_run "$commit")
+
+  if [[ -n $dry_run ]]; then
+    printf 'Would run %s for %s in %s\n' \
+      "$release_workflow" "$tag" "$release_repo"
+    return
+  fi
+
+  "$gh" workflow run "$release_workflow" \
+    --repo "$release_repo" \
+    --ref "$tag" \
+    -f "version=$tag"
+
+  run_id=
+  for _ in {1..15}; do
+    sleep 2
+    run_id=$(latest_run "$commit")
+    if [[ -n $run_id && $run_id != "$prior_run" ]]; then
+      break
+    fi
+  done
+  [[ -n $run_id && $run_id != "$prior_run" ]] ||
+    die 'Could not find the new release workflow run'
+
+  printf 'Watching release workflow run %s\n' "$run_id"
+  "$gh" run watch "$run_id" \
+    --repo "$release_repo" \
+    --exit-status \
+    --interval 10
+}
+
+do_release() {
+  do_sanity_check
+  if [[ -n $dry_run ]]; then
+    printf 'Would start and watch the GitHub release workflow\n'
+    return
+  fi
+  confirm "Start release workflow for v$new_version?" ||
+    die 'Release stopped before workflow dispatch'
+  do_build_github
+}
+
+case $command in
+  list)
+    do_list
+    ;;
+  sanity-check)
+    do_sanity_check
+    ;;
+  build-github)
+    do_build_github
+    ;;
+  release)
+    do_release
+    ;;
+  *)
+    die "Unknown release command: $command"
+    ;;
+esac
