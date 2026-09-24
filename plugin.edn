@@ -1,0 +1,8 @@
+{:abi 1
+ :api "dumper-format"
+ :name "yamlfmt"
+ :version "0.1.0"
+ :kind "dumper-format"
+ :input-format "yaml-utf8-v1"
+ :output-format "yaml-utf8-v1"
+ :options-format "json-v1"}
